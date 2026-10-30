@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python (syntax + payload validity)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile every Python module
+        run: |
+          python -m compileall -q src/ scripts/
+          echo "compileall OK"
+
+      - name: Parse every JSON payload
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          bad = []
+          for p in list(pathlib.Path(".").rglob("*.json")):
+              if ".git" in p.parts:
+                  continue
+              try:
+                  json.loads(p.read_text(encoding="utf-8"))
+              except Exception as e:
+                  bad.append("%s: %s" % (p, e))
+          print("\n".join(bad) if bad else "all json OK")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: The sample catalogue must match the schema the app declares
+        run: |
+          python - <<'PY'
+          import csv, re, pathlib, sys
+          src = pathlib.Path("src/config.py").read_text(encoding="utf-8")
+          m = re.search(r"DEFAULT_FIELDNAMES\s*=\s*\[(.*?)\]", src, re.S)
+          body = "\n".join(l.split("#")[0] for l in m.group(1).split("\n"))
+          expected = re.findall(r'"([a-z_]+)"', body)
+          with open("samples/video_manager.csv", encoding="utf-8") as f:
+              actual = next(csv.reader(f))
+          if actual != expected:
+              print("schema drift:\n  expected %s\n  actual   %s" % (expected, actual))
+              sys.exit(1)
+          print("sample schema OK (%d columns)" % len(expected))
+          PY
+
+  javascript:
+    name: javascript (syntax check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: node --check every script
+        run: |
+          set -e
+          find . -type f \( -name '*.js' -o -name '*.cjs' -o -name '*.mjs' \)             -not -path './.git/*' -not -path '*/node_modules/*' -print0             | xargs -0 -n1 node --check
+          echo "node --check OK"
